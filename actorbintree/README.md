@@ -1,7 +1,7 @@
 ## Binary Trees
 Binary trees are tree based data structures where every node has at most two children (left and right). In this exercise, every node stores an integer element. From this we can build a binary search tree by requiring for every node that
 
-values of elements in the left subtree are strictly smaller than the node's element
+values of elements in the left subtree are strictly smaller than the node's element /n
 values of elements in the right subtree are strictly bigger than the node's element
 In addition, there should be no duplicates, hence we obtain a binary tree set.
 
