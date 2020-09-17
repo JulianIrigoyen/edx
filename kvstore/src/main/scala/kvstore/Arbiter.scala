@@ -1,6 +1,6 @@
 package kvstore
 
-import akka.actor.{ActorRef, Actor}
+import akka.actor.{Actor, ActorLogging, ActorRef}
 
 object Arbiter {
   case object Join
@@ -13,14 +13,16 @@ object Arbiter {
    */
   case class Replicas(replicas: Set[ActorRef])
 }
-
-class Arbiter extends Actor {
+/** Assigns primary or secondary roles to nodes.  */
+class Arbiter extends Actor with ActorLogging {
   import Arbiter._
   var leader: Option[ActorRef] = None
   var replicas = Set.empty[ActorRef]
 
   def receive = {
-    case Join =>
+
+    case j@Join =>
+      log.info(s"Arbiter got $j cmd")
       if (leader.isEmpty) {
         leader = Some(sender)
         replicas += sender

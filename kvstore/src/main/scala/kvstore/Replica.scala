@@ -1,14 +1,20 @@
 package kvstore
 
-import akka.actor.{ OneForOneStrategy, PoisonPill, Props, SupervisorStrategy, Terminated, ActorRef, Actor }
+import akka.actor.{Actor, ActorLogging, ActorRef, OneForOneStrategy, PoisonPill, Props, SupervisorStrategy, Terminated}
 import kvstore.Arbiter._
-import akka.pattern.{ ask, pipe }
+import akka.pattern.{ask, pipe}
+
 import scala.concurrent.duration._
 import akka.util.Timeout
 
+import scala.collection.IterableOnce.iterableOnceExtensionMethods
+
 /**
-  * The primary replica (root node) is will be resposible for replicating all changes
-  * to a set of of secondary nodes (secondary nodes)
+  * //nvaa
+  * GOAL  implement a distributed, replicated storage of key-value pairs
+  *
+  * The primary replica (root node) will be resposible for replicating all changes
+  * to a set of of secondary replicas (secondary nodes)
   *
   * KEY ASSUMPTIONS
   * The primary replica is the only one that can handle Insertions and Removals
@@ -18,9 +24,11 @@ import akka.util.Timeout
   *
   * OTHER ASSUMPTIONS
   * Updates are only ppossible on a dedicated node ==> ROOT
-  * The root DOES NOT FAIL
+  * The root DOES NOT FAIL (error kernel pattern)
   * Membership is handled reliably by the Arbiter
   * No incoming requests need to be rejected, because there is a low update rate.
+  * When rejecting an update, the store is left in a possibly incosistent state
+  *   which may require a subsequent ucceeding wite to the same key value pair
   *
   */
 object Replica {
@@ -28,7 +36,9 @@ object Replica {
     def key: String
     def id: Long
   }
+  /** Instructs Pr to insert key,value pair into the storage and replicate it to srs */
   case class Insert(key: String, value: String, id: Long) extends Operation
+  /** Instructs Pr to remove the key and corresponding value from the storage and then remove it from srs */
   case class Remove(key: String, id: Long) extends Operation
   case class Get(key: String, id: Long) extends Operation
 
@@ -40,12 +50,15 @@ object Replica {
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
 
-class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
+class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with ActorLogging {
   import Replica._
   import Replicator._
   import Persistence._
   import context.dispatcher
 
+  override def preStart(): Unit = {
+    arbiter ! Join
+  }
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
@@ -64,6 +77,27 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   /* TODO Behavior for  the leader role. */
   val leader: Receive = {
+
+    case Insert(key, value, id) => kv.get(key) match {
+        case Some(_) => sender() ! OperationAck(id)
+        case None =>
+          kv += key -> value
+          sender() ! OperationAck(id)
+      }
+
+    case Remove(key, id) => kv.get(key) match {
+        case Some(_) =>
+          kv -= key
+          sender() ! OperationAck(id)
+        case None =>
+          sender() ! OperationAck(id)
+      }
+
+    case Get(key, id) =>
+      sender ! GetResult(key, kv.get(key), id)
+
+    case Replicas(replicas) =>
+
     case _ =>
   }
 
