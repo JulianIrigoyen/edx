@@ -6,6 +6,23 @@ import akka.pattern.{ ask, pipe }
 import scala.concurrent.duration._
 import akka.util.Timeout
 
+/**
+  * The primary replica (root node) is will be resposible for replicating all changes
+  * to a set of of secondary nodes (secondary nodes)
+  *
+  * KEY ASSUMPTIONS
+  * The primary replica is the only one that can handle Insertions and Removals
+  * The primary replica is the only one that can replicate its current state to secondary replicas
+  * Both primary and secondary replicas can handle READ EVENTS
+  * Secondary replicas can provide an outdated result for READ EVENTS
+  *
+  * OTHER ASSUMPTIONS
+  * Updates are only ppossible on a dedicated node ==> ROOT
+  * The root DOES NOT FAIL
+  * Membership is handled reliably by the Arbiter
+  * No incoming requests need to be rejected, because there is a low update rate.
+  *
+  */
 object Replica {
   sealed trait Operation {
     def key: String
