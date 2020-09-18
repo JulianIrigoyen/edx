@@ -113,6 +113,9 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
         secondaries += replica -> replicator
       }
 
+    case Replicated(key, id) =>
+      log.info("primary received replicated")
+
 
     case _ =>
   }
@@ -138,8 +141,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
     }
     case Snapshot(_,_,_) => log.info(s"entro por akka")
-    case Replicated(key, id) => log.info(s"entro por akka")
-
 
 
     case Get(key, id) =>

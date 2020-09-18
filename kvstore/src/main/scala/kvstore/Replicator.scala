@@ -10,6 +10,7 @@ object Replicator {
   
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
   case class SnapshotAck(key: String, seq: Long)
+  case class RetryUntilAcknowledged(key: String, valueOption: Option[String], seq: Long)
 
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
@@ -17,7 +18,7 @@ object Replicator {
 class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
   import Replicator._
   import context.dispatcher
-  
+
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
@@ -42,14 +43,25 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
     case updateOperation @ Replicate(key, valueOption ,id) =>
       val updateNumber = nextSeq()
       log.info("Processing replication request number {} for replica {} for key: {}, value: {}", updateNumber, replica, key, valueOption)
-      pendingAcknowledgements += (updateNumber -> (sender(), updateOperation))
       replica ! Snapshot(key, valueOption, updateNumber)
+      pendingAcknowledgements += (updateNumber -> (sender(), updateOperation))
 
-    case msg @ SnapshotAck(key, seq) =>
-      handleSnapchotAck(msg)
+      context.system.scheduler.scheduleOnce(10.milliseconds) {
+        self ! RetryUntilAcknowledged(key, valueOption, updateNumber)
+      }
 
 
+    case RetryUntilAcknowledged(key, valueOption, seq) if pendingAcknowledgements contains seq =>
+      log.info(s"retrying snpashot")
+      replica  ! Snapshot(key, valueOption, seq)
+      context.system.scheduler.scheduleOnce(10.milliseconds) {
+        self ! RetryUntilAcknowledged(key, valueOption, seq)
+      }
 
+    case SnapshotAck(key,seq) if pendingAcknowledgements contains seq =>
+      for((replica, operation) <- pendingAcknowledgements.get(seq))
+        replica ! Replicated(key, operation.id)
+      pendingAcknowledgements -= seq
 
 
     case _ =>
@@ -64,6 +76,10 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
     correspondingReplica ! Replicated(msg.key, correspondingOperation.id)
 
     pendingAcknowledgements -= msg.seq
+  }
+
+  def retryUntilAcknowledged(ack: SnapshotAck) = {
+
   }
 
 }
