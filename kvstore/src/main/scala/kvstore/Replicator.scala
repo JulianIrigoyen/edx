@@ -23,7 +23,7 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
    */
 
   // map from sequence number to pair of sender and request
-  var acks = Map.empty[Long, (ActorRef, Replicate)]
+  var pendingAcknowledgements = Map.empty[Long, (ActorRef, Replicate)]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
 
@@ -36,19 +36,34 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
     ret
   }
 
-  
+
   /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case updateOp@Replicate(key, valueOption ,id) =>
+    case updateOperation @ Replicate(key, valueOption ,id) =>
       val updateNumber = nextSeq()
-      log.info("Applying replication number {} in replica {} for key {}", updateNumber, replica, key)
+      log.info("Processing replication request number {} for replica {} for key: {}, value: {}", updateNumber, replica, key, valueOption)
+      pendingAcknowledgements += (updateNumber -> (sender(), updateOperation))
       replica ! Snapshot(key, valueOption, updateNumber)
 
-    case SnapshotAck(key, seq) =>
-      acks
+    case msg @ SnapshotAck(key, seq) =>
+      handleSnapchotAck(msg)
+
+
+
 
 
     case _ =>
+
+  }
+
+  def handleSnapchotAck(msg: SnapshotAck) = {
+    val correspondingAcknowledgement = pendingAcknowledgements(msg.seq)
+    val correspondingReplica = correspondingAcknowledgement._1
+    val correspondingOperation = correspondingAcknowledgement._2
+
+    correspondingReplica ! Replicated(msg.key, correspondingOperation.id)
+
+    pendingAcknowledgements -= msg.seq
   }
 
 }

@@ -71,7 +71,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   var _replicatorId = 0L
 
-  var _expectedUpdateNumber = 0L
+  var expectedSeq = 0L
 
 
   def receive = {
@@ -102,16 +102,17 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
       sender ! GetResult(key, kv.get(key), id)
 
     case Replicas(replicas) =>
-      val newReplicas = replicas - self
-      for(replica <- newReplicas)
-        secondaries.get(replica) match {
-          case Some(replicator) =>
-          case None =>
-            val replicator = createReplicator(replica)
-            replicators += replicator
-            replicate(replicator)
-            secondaries += replica -> replicator
-        }
+      val allTheReplicas: Set[ActorRef] = replicas - self
+      val alreadyRunningReplicas: Set[ActorRef] = secondaries.keySet
+
+      val newReplicas = allTheReplicas -- alreadyRunningReplicas
+      newReplicas foreach { replica =>
+        val replicator = createReplicator(replica)
+        replicators += replicator
+        replicate(replicator)
+        secondaries += replica -> replicator
+      }
+
 
     case _ =>
   }
@@ -120,19 +121,25 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   val replica: Receive = {
     case Insert(_, _, id) => sender() ! OperationFailed(id)
     case Remove(_, id) => sender() ! OperationFailed(id)
-    case Snapshot(key, valueOption, seq) => seq match {
-      case _ if seq == _expectedUpdateNumber =>
+
+    case snapshot @ Snapshot(key, valueOption, seq) =>
+      log.info(s"{} received {}, sequence number {} ", self, snapshot, seq)
+      seq match {
+      case _ if seq == expectedSeq =>
         valueOption match {
           case Some(value) => kv += key -> value
           case None => kv -= key
         }
         sender() ! SnapshotAck(key, seq)
         acknowledgeThatStateWasUpdated()
-      case _ if seq > _expectedUpdateNumber => ()
-      case _ if seq < _expectedUpdateNumber =>
+      case _ if seq > expectedSeq => ()
+      case _ if seq < expectedSeq =>
         sender() ! SnapshotAck(key, seq)
 
     }
+    case Snapshot(_,_,_) => log.info(s"entro por akka")
+    case Replicated(key, id) => log.info(s"entro por akka")
+
 
 
     case Get(key, id) =>
@@ -141,6 +148,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
 
     case _ =>
+      log.info("sale por aca")
   }
 
   def createReplicator(replica: ActorRef): ActorRef = {
@@ -155,7 +163,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   }
 
   def acknowledgeThatStateWasUpdated() = {
-    _expectedUpdateNumber += 1
+    expectedSeq += 1
   }
   def replicate(replicator: ActorRef): Unit = {
     for {
