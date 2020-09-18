@@ -69,6 +69,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
+  var _replicatorId = 0L
+
+  var _expectedUpdateNumber = 0L
+
 
   def receive = {
     case JoinedPrimary   => context.become(leader)
@@ -79,7 +83,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   val leader: Receive = {
 
     case Insert(key, value, id) => kv.get(key) match {
-        case Some(_) => sender() ! OperationAck(id)
+        case Some(_) =>
+          sender() ! OperationAck(id)
         case None =>
           kv += key -> value
           sender() ! OperationAck(id)
@@ -97,13 +102,66 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
       sender ! GetResult(key, kv.get(key), id)
 
     case Replicas(replicas) =>
+      val newReplicas = replicas - self
+      for(replica <- newReplicas)
+        secondaries.get(replica) match {
+          case Some(replicator) =>
+          case None =>
+            val replicator = createReplicator(replica)
+            replicators += replicator
+            replicate(replicator)
+            secondaries += replica -> replicator
+        }
 
     case _ =>
   }
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = {
+    case Insert(_, _, id) => sender() ! OperationFailed(id)
+    case Remove(_, id) => sender() ! OperationFailed(id)
+    case Snapshot(key, valueOption, seq) => seq match {
+      case _ if seq == _expectedUpdateNumber =>
+        valueOption match {
+          case Some(value) => kv += key -> value
+          case None => kv -= key
+        }
+        sender() ! SnapshotAck(key, seq)
+        acknowledgeThatStateWasUpdated()
+      case _ if seq > _expectedUpdateNumber => ()
+      case _ if seq < _expectedUpdateNumber =>
+        sender() ! SnapshotAck(key, seq)
+
+    }
+
+
+    case Get(key, id) =>
+      sender ! GetResult(key, kv.get(key), id)
+
+
+
     case _ =>
+  }
+
+  def createReplicator(replica: ActorRef): ActorRef = {
+    val newReplicatorid = nextReplicatorId()
+    context.actorOf(Replicator.props(replica), s"replicator-$newReplicatorid")
+  }
+
+  def nextReplicatorId() = {
+    val newId = _replicatorId
+    _replicatorId += 1
+    newId
+  }
+
+  def acknowledgeThatStateWasUpdated() = {
+    _expectedUpdateNumber += 1
+  }
+  def replicate(replicator: ActorRef): Unit = {
+    for {
+      key <- kv.keys
+      value <- kv.values
+    } yield replicator ! Replicator.Replicate(key, Some(value), 222)
   }
 
 }

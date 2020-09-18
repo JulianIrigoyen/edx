@@ -1,8 +1,7 @@
 package kvstore
 
-import akka.actor.Props
-import akka.actor.Actor
-import akka.actor.ActorRef
+import akka.actor.{Actor, ActorLogging, ActorRef, Props}
+
 import scala.concurrent.duration._
 
 object Replicator {
@@ -15,7 +14,7 @@ object Replicator {
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
 
-class Replicator(val replica: ActorRef) extends Actor {
+class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
   import Replicator._
   import context.dispatcher
   
@@ -27,7 +26,9 @@ class Replicator(val replica: ActorRef) extends Actor {
   var acks = Map.empty[Long, (ActorRef, Replicate)]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
-  
+
+  /** sequence number (seq) to enforce ordering between the updates. Updates for a given secondary replica must be processed in contiguous ascending sequence number order;
+    * this ensures that updates for every single key are applied in the correct order.  */
   var _seqCounter = 0L
   def nextSeq() = {
     val ret = _seqCounter
@@ -38,6 +39,15 @@ class Replicator(val replica: ActorRef) extends Actor {
   
   /* TODO Behavior for the Replicator. */
   def receive: Receive = {
+    case updateOp@Replicate(key, valueOption ,id) =>
+      val updateNumber = nextSeq()
+      log.info("Applying replication number {} in replica {} for key {}", updateNumber, replica, key)
+      replica ! Snapshot(key, valueOption, updateNumber)
+
+    case SnapshotAck(key, seq) =>
+      acks
+
+
     case _ =>
   }
 
