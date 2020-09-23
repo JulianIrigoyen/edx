@@ -7,10 +7,10 @@ import scala.concurrent.duration._
 object Replicator {
   case class Replicate(key: String, valueOption: Option[String], id: Long)
   case class Replicated(key: String, id: Long)
-  
+
   case class Snapshot(key: String, valueOption: Option[String], seq: Long)
   case class SnapshotAck(key: String, seq: Long)
-  case class RetryUntilAcknowledged(key: String, valueOption: Option[String], seq: Long)
+  case class RetrySnapshot(key: String, valueOption: Option[String], seq: Long)
 
   def props(replica: ActorRef): Props = Props(new Replicator(replica))
 }
@@ -24,12 +24,10 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
    */
 
   // map from sequence number to pair of sender and request
-  var pendingAcknowledgements = Map.empty[Long, (ActorRef, Replicate)]
+  var pendingAcknowledgment = Map.empty[Long, (ActorRef, Replicate)]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
 
-  /** sequence number (seq) to enforce ordering between the updates. Updates for a given secondary replica must be processed in contiguous ascending sequence number order;
-    * this ensures that updates for every single key are applied in the correct order.  */
   var _seqCounter = 0L
   def nextSeq() = {
     val ret = _seqCounter
@@ -40,46 +38,47 @@ class Replicator(val replica: ActorRef) extends Actor with ActorLogging {
 
   /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case updateOperation @ Replicate(key, valueOption ,id) =>
-      val updateNumber = nextSeq()
-      log.info("Processing replication request number {} for replica {} for key: {}, value: {}", updateNumber, replica, key, valueOption)
-      replica ! Snapshot(key, valueOption, updateNumber)
-      pendingAcknowledgements += (updateNumber -> (sender(), updateOperation))
-
-      context.system.scheduler.scheduleOnce(10.milliseconds) {
-        self ! RetryUntilAcknowledged(key, valueOption, updateNumber)
-      }
-
-
-    case RetryUntilAcknowledged(key, valueOption, seq) if pendingAcknowledgements contains seq =>
-      log.info(s"retrying snpashot")
-      replica  ! Snapshot(key, valueOption, seq)
-      context.system.scheduler.scheduleOnce(10.milliseconds) {
-        self ! RetryUntilAcknowledged(key, valueOption, seq)
-      }
-
-    case SnapshotAck(key,seq) if pendingAcknowledgements contains seq =>
-      for((replica, operation) <- pendingAcknowledgements.get(seq))
-        replica ! Replicated(key, operation.id)
-      pendingAcknowledgements -= seq
-
-
-    case _ =>
-
+    case replicate: Replicate               => handleReplicate(replicate)
+    case snapshotAcknowledged: SnapshotAck  => handleSnapshotAcknowledged(snapshotAcknowledged)
+    case retrySnapshot: RetrySnapshot       => handleRetrySnapshot(retrySnapshot)
+    case _                                  => ()
   }
 
-  def handleSnapchotAck(msg: SnapshotAck) = {
-    val correspondingAcknowledgement = pendingAcknowledgements(msg.seq)
-    val correspondingReplica = correspondingAcknowledgement._1
-    val correspondingOperation = correspondingAcknowledgement._2
+  /** Initiates the replication of a given update to a key.
+    * by sending a Snapshot to the corresponding Replica */
+  def handleReplicate(replicate: Replicate): Unit = {
+    log.info(s"Intiating replication {} of {}: {}", replicate.id, replicate.key, replicate.valueOption)
+    val updateSequenceNumber = nextSeq()
+    pendingAcknowledgment += updateSequenceNumber -> (sender() ,replicate)
+    replica ! Snapshot(replicate.key, replicate.valueOption, updateSequenceNumber)
 
-    correspondingReplica ! Replicated(msg.key, correspondingOperation.id)
-
-    pendingAcknowledgements -= msg.seq
+    context.system.scheduler.scheduleOnce(10.milliseconds) {
+      self ! RetrySnapshot(replicate.key, replicate.valueOption, updateSequenceNumber)
+    }
   }
 
-  def retryUntilAcknowledged(ack: SnapshotAck) = {
+  /** Notifies the primary Node that a Replicate request has been fullfiled  */
+  def handleSnapshotAcknowledged(acknowledgement: SnapshotAck) = {
+    pendingAcknowledgment.get(acknowledgement.seq) match {
+      case Some(_) =>
+        log.info(s"Received acknowledgement for sequence ${acknowledgement.seq}")
+        for((replica, operation) <- pendingAcknowledgment.get(acknowledgement.seq))
+          replica ! Replicated(acknowledgement.key, operation.id)
 
+        pendingAcknowledgment -= acknowledgement.seq
+      case None => ()
+    }
   }
 
+  def handleRetrySnapshot(retry: RetrySnapshot) = {
+    pendingAcknowledgment.get(retry.seq) match {
+      case Some(_) =>
+        log.info(s"Retrying SNAPSHOT $retry")
+        replica ! Snapshot(retry.key, retry.valueOption, retry.seq)
+        context.system.scheduler.scheduleOnce(50.milliseconds) {
+          self ! RetrySnapshot(retry.key, retry.valueOption, retry.seq)
+        }
+      case None => ()
+    }
+  }
 }
